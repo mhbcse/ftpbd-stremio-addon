@@ -1,4 +1,9 @@
 // Builds the Stremio addon interface: manifest + catalog/meta/stream handlers.
+//
+// Supports several source layouts (see config.js): movie sources organized by
+// year / language / flat, and TV-series sources (show -> season -> episode).
+// Matched titles use their real IMDB id (so Cinemeta metadata + OpenSubtitles
+// work); unmatched titles fall back to our own folder-encoded `ftpbd:` ids.
 
 const { addonBuilder } = require('stremio-addon-sdk');
 const config = require('./config');
@@ -9,8 +14,14 @@ const { encodeId, decodeId } = require('./lib/id');
 
 const { SOURCES, PAGE_SIZE, ENRICH_CONCURRENCY, CACHE_TTL_MS } = config;
 
-const sourceById = new Map(SOURCES.map((s) => [s.id, s]));
 const catalogToSource = new Map(SOURCES.map((s) => [`ftpbd-${s.id}`, s]));
+
+function layoutOf(source) {
+  return source.layout || 'year';
+}
+function stremioType(source) {
+  return layoutOf(source) === 'series' ? 'series' : 'movie';
+}
 
 // ---- helpers ---------------------------------------------------------------
 
@@ -28,7 +39,6 @@ async function mapLimit(items, limit, fn) {
   return results;
 }
 
-// Normalize a title for fuzzy equality: lowercase, strip everything non-alphanumeric.
 function normalizeTitle(s) {
   return (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
@@ -40,6 +50,14 @@ function yearOf(s) {
 
 function isImdbId(id) {
   return typeof id === 'string' && /^tt\d+/.test(id);
+}
+
+function lastSegmentName(url) {
+  try {
+    return decodeURIComponent(url.replace(/\/+$/, '').split('/').pop() || '');
+  } catch {
+    return '';
+  }
 }
 
 // Build a Stremio stream object from a discovered video file.
@@ -54,82 +72,115 @@ function buildStream(video) {
   };
 }
 
-// Build a catalog meta-preview from a movie folder, enriched via Cinemeta.
-async function toCatalogMeta(movie) {
-  const parsed = scraper.parseMovieName(movie.name);
-  const match = await cinemeta.search(parsed.title, parsed.year).catch(() => null);
+// Whole-source index (flat list of movies or shows), cached. Used for search,
+// default browse of non-year layouts, and IMDB -> file resolution.
+async function buildIndex(source) {
+  return cache.remember(`index:${source.id}`, CACHE_TTL_MS, async () => {
+    const layout = layoutOf(source);
+    if (layout === 'flat' || layout === 'series') {
+      const items = await scraper.listMovies(source.baseUrl);
+      return items.map((it) => ({ name: it.name, url: it.url }));
+    }
+    // grouped: year or language
+    const groups = await scraper.listGroups(source.baseUrl, layout);
+    const lists = await mapLimit(groups, 6, async (g) => {
+      try {
+        const items = await scraper.listMovies(g.url);
+        return items.map((it) => ({ name: it.name, url: it.url, group: g.name, year: g.year }));
+      } catch {
+        return [];
+      }
+    });
+    return lists.flat();
+  });
+}
 
-  // Prefer the real IMDB id so Stremio treats this as a known movie — that's
-  // what makes Cinemeta metadata and OpenSubtitles addons kick in. Fall back to
-  // our own folder-encoded id when Cinemeta can't match the title.
-  const id = match && isImdbId(match.id) ? match.id : encodeId(movie.url);
+// Collect a show's episodes with resolved { season, episode }. Handles shows
+// with Season-N sub-folders and shows whose episodes sit directly inside.
+async function collectEpisodes(showUrl) {
+  const seasons = await scraper.listSeasons(showUrl);
+  const seasonList = seasons.length ? seasons : [{ url: showUrl, season: 1 }];
+  const out = [];
+  for (const s of seasonList) {
+    const seasonNum = s.season || 1;
+    let eps;
+    try {
+      eps = await scraper.listEpisodes(s.url);
+    } catch {
+      eps = [];
+    }
+    eps.sort((a, b) => (a.episode || 0) - (b.episode || 0));
+    let counter = 0;
+    for (const ep of eps) {
+      counter++;
+      out.push({
+        name: ep.name,
+        url: ep.url,
+        season: ep.season || seasonNum,
+        episode: ep.episode || counter
+      });
+    }
+  }
+  return out;
+}
 
-  const qualityTag = parsed.quality ? ` • ${parsed.quality}` : '';
+// ---- catalog ---------------------------------------------------------------
+
+async function toCatalogMeta(item, source) {
+  const type = stremioType(source);
+  const parsed = scraper.parseMovieName(item.name);
+  const match = await cinemeta.search(parsed.title, parsed.year, type).catch(() => null);
+
+  // Prefer the real IMDB id so Stremio treats this as a known title (enables
+  // Cinemeta metadata + OpenSubtitles); fall back to our folder-encoded id.
+  const id = match && isImdbId(match.id) ? match.id : encodeId(item.url);
 
   return {
     id,
-    type: 'movie',
+    type,
     name: (match && match.name) || parsed.title || parsed.raw,
     poster: match && match.poster,
     posterShape: 'poster',
     background: match && match.background,
     releaseInfo: (match && match.releaseInfo) || parsed.year || undefined,
     description:
-      (match && match.description
-        ? match.description + '\n\n'
-        : '') + `FTPBD: ${parsed.raw}${qualityTag}`,
+      (match && match.description ? match.description + '\n\n' : '') + `FTPBD: ${parsed.raw}`,
     imdbRating: match && match.imdbRating,
     genres: match && match.genres
   };
 }
 
-// Whole-source index (all years flattened), cached. Used for search.
-async function buildIndex(source) {
-  return cache.remember(`index:${source.id}`, CACHE_TTL_MS, async () => {
-    const years = await scraper.listYears(source.baseUrl);
-    const all = [];
-    for (const y of years) {
-      try {
-        const movies = await scraper.listMovies(y.url);
-        for (const mv of movies) all.push({ ...mv, year: y.year });
-      } catch {
-        // skip a year that fails to load rather than failing the whole index
-      }
-    }
-    return all;
-  });
-}
-
-// ---- handlers --------------------------------------------------------------
-
 async function catalogHandler({ id, extra }) {
   const source = catalogToSource.get(id);
   if (!source) return { metas: [] };
 
+  const layout = layoutOf(source);
   const skip = parseInt((extra && extra.skip) || 0, 10) || 0;
   const search = extra && extra.search;
-  const genre = extra && extra.genre; // a year-folder name
+  const genre = extra && extra.genre;
 
-  let movies;
+  let items;
   if (search) {
     const index = await buildIndex(source);
     const q = search.toLowerCase();
-    movies = index.filter((m) => m.name.toLowerCase().includes(q));
-  } else if (genre) {
-    const years = await scraper.listYears(source.baseUrl);
-    const year = years.find((y) => y.name === genre) || years[0];
-    movies = year ? await scraper.listMovies(year.url) : [];
+    items = index.filter((m) => m.name.toLowerCase().includes(q));
+  } else if (genre && (layout === 'year' || layout === 'language')) {
+    const groups = await scraper.listGroups(source.baseUrl, layout);
+    const g = groups.find((x) => x.name === genre) || groups[0];
+    items = g ? await scraper.listMovies(g.url) : [];
+  } else if (layout === 'year') {
+    // default browse: newest year
+    const groups = await scraper.listGroups(source.baseUrl, 'year');
+    items = groups.length ? await scraper.listMovies(groups[0].url) : [];
   } else {
-    // Default browse: newest year.
-    const years = await scraper.listYears(source.baseUrl);
-    movies = years.length ? await scraper.listMovies(years[0].url) : [];
+    // language / flat / series default browse: first page of the full index
+    items = await buildIndex(source);
   }
 
-  const page = movies.slice(skip, skip + PAGE_SIZE);
-  const metas = await mapLimit(page, ENRICH_CONCURRENCY, (mv) => toCatalogMeta(mv));
+  const page = items.slice(skip, skip + PAGE_SIZE);
+  const metas = await mapLimit(page, ENRICH_CONCURRENCY, (it) => toCatalogMeta(it, source));
 
-  // Collapse duplicates: the same movie in several qualities shares one IMDB id
-  // and should appear once (its qualities surface as separate streams).
+  // Collapse duplicates (e.g. same movie in several qualities share one IMDB id).
   const seen = new Set();
   const deduped = [];
   for (const m of metas) {
@@ -140,19 +191,23 @@ async function catalogHandler({ id, extra }) {
   return { metas: deduped };
 }
 
-async function metaHandler({ id }) {
-  const folderUrl = decodeId(id);
-  if (!folderUrl) return { meta: null };
+// ---- meta (only for our fallback `ftpbd:` ids; Cinemeta owns IMDB ids) ------
 
-  const folderName = decodeURIComponent(folderUrl.replace(/\/+$/, '').split('/').pop() || '');
-  const parsed = scraper.parseMovieName(folderName);
-  const match = await cinemeta.search(parsed.title, parsed.year).catch(() => null);
+async function metaHandler({ type, id }) {
+  const url = decodeId(id);
+  if (!url) return { meta: null };
+  if (type === 'series') return { meta: await buildSeriesMeta(id, url) };
+  return { meta: await buildMovieMeta(id, url) };
+}
 
+async function buildMovieMeta(id, folderUrl) {
+  const parsed = scraper.parseMovieName(lastSegmentName(folderUrl));
+  const match = await cinemeta.search(parsed.title, parsed.year, 'movie').catch(() => null);
   let full = null;
-  if (match && match.id) full = await cinemeta.meta(match.id).catch(() => null);
+  if (match && match.id) full = await cinemeta.meta(match.id, 'movie').catch(() => null);
   const base = full || match || {};
 
-  const meta = {
+  return {
     id,
     type: 'movie',
     name: base.name || parsed.title || parsed.raw,
@@ -160,8 +215,7 @@ async function metaHandler({ id }) {
     background: base.background,
     logo: base.logo,
     description:
-      (base.description ? base.description + '\n\n' : '') +
-      `Source: FTPBD\nFolder: ${parsed.raw}`,
+      (base.description ? base.description + '\n\n' : '') + `Source: FTPBD\nFolder: ${parsed.raw}`,
     releaseInfo: base.releaseInfo || parsed.year || undefined,
     runtime: base.runtime,
     genres: base.genres,
@@ -169,14 +223,53 @@ async function metaHandler({ id }) {
     director: base.director,
     imdbRating: base.imdbRating
   };
-
-  return { meta };
 }
 
-async function streamHandler({ id }) {
-  if (isImdbId(id)) return streamFromImdb(id);
+async function buildSeriesMeta(id, showUrl) {
+  const parsed = scraper.parseMovieName(lastSegmentName(showUrl));
+  const match = await cinemeta.search(parsed.title, parsed.year, 'series').catch(() => null);
+  let base = {};
+  if (match && match.id) base = (await cinemeta.meta(match.id, 'series').catch(() => null)) || match;
+  else if (match) base = match;
 
-  // Fallback: our own folder-encoded id (movies Cinemeta couldn't match).
+  const episodes = await collectEpisodes(showUrl);
+  // Each fallback episode id encodes the file URL directly, so the stream
+  // handler can resolve it without re-scraping.
+  const videos = episodes.map((ep) => ({
+    id: encodeId(ep.url),
+    title: ep.name,
+    season: ep.season,
+    episode: ep.episode
+  }));
+
+  return {
+    id,
+    type: 'series',
+    name: base.name || parsed.title || parsed.raw,
+    poster: base.poster,
+    background: base.background,
+    logo: base.logo,
+    description:
+      (base.description ? base.description + '\n\n' : '') + `Source: FTPBD\nFolder: ${parsed.raw}`,
+    releaseInfo: base.releaseInfo || parsed.year || undefined,
+    genres: base.genres,
+    videos
+  };
+}
+
+// ---- stream ----------------------------------------------------------------
+
+async function streamHandler({ type, id }) {
+  if (type === 'series') {
+    if (isImdbId(id)) return streamSeriesFromImdb(id);
+    // fallback: the (custom) episode id encodes the file URL directly
+    const fileUrl = decodeId(id);
+    if (!fileUrl) return { streams: [] };
+    return { streams: [buildStream({ name: lastSegmentName(fileUrl), url: fileUrl })] };
+  }
+
+  // movie
+  if (isImdbId(id)) return streamFromImdb(id);
   const folderUrl = decodeId(id);
   if (!folderUrl) return { streams: [] };
   let videos;
@@ -188,11 +281,10 @@ async function streamHandler({ id }) {
   return { streams: videos.map(buildStream) };
 }
 
-// Find every FTPBD folder across all sources that matches an IMDB id, then
-// return one stream per video file (so multiple qualities all show up).
+// Movie: find every folder across movie sources matching an IMDB id.
 async function streamFromImdb(imdbId) {
   return cache.remember(`streams:${imdbId}`, CACHE_TTL_MS, async () => {
-    const meta = await cinemeta.meta(imdbId).catch(() => null);
+    const meta = await cinemeta.meta(imdbId, 'movie').catch(() => null);
     if (!meta) return { streams: [] };
 
     const wantTitle = normalizeTitle(meta.name);
@@ -200,6 +292,7 @@ async function streamFromImdb(imdbId) {
 
     const matches = [];
     for (const source of SOURCES) {
+      if (stremioType(source) !== 'movie') continue;
       let index;
       try {
         index = await buildIndex(source);
@@ -207,9 +300,9 @@ async function streamFromImdb(imdbId) {
         continue;
       }
       for (const mv of index) {
-        const parsed = scraper.parseMovieName(mv.name);
-        if (normalizeTitle(parsed.title) !== wantTitle) continue;
-        if (wantYear && parsed.year && Math.abs(Number(parsed.year) - wantYear) > 1) continue;
+        const p = scraper.parseMovieName(mv.name);
+        if (normalizeTitle(p.title) !== wantTitle) continue;
+        if (wantYear && p.year && Math.abs(Number(p.year) - wantYear) > 1) continue;
         matches.push(mv);
       }
     }
@@ -223,46 +316,89 @@ async function streamFromImdb(imdbId) {
   });
 }
 
+// Series: id is `ttXXXXXXX:season:episode`. Resolve to the episode file.
+async function streamSeriesFromImdb(fullId) {
+  return cache.remember(`streams:${fullId}`, CACHE_TTL_MS, async () => {
+    const [imdbId, sStr, eStr] = fullId.split(':');
+    const season = parseInt(sStr, 10);
+    const episode = parseInt(eStr, 10);
+    if (!season || !episode) return { streams: [] };
+
+    const meta = await cinemeta.meta(imdbId, 'series').catch(() => null);
+    if (!meta) return { streams: [] };
+
+    const wantTitle = normalizeTitle(meta.name);
+    const wantYear = yearOf(meta.releaseInfo || meta.year);
+
+    const streams = [];
+    for (const source of SOURCES) {
+      if (layoutOf(source) !== 'series') continue;
+      let shows;
+      try {
+        shows = await buildIndex(source);
+      } catch {
+        continue;
+      }
+      for (const show of shows) {
+        const p = scraper.parseMovieName(show.name);
+        if (normalizeTitle(p.title) !== wantTitle) continue;
+        // series titles can span multiple years; be lenient
+        if (wantYear && p.year && Math.abs(Number(p.year) - wantYear) > 2) continue;
+
+        const episodes = await collectEpisodes(show.url).catch(() => []);
+        for (const ep of episodes) {
+          if (ep.season === season && ep.episode === episode) {
+            streams.push(buildStream({ name: ep.name, url: ep.url }));
+          }
+        }
+      }
+    }
+    return { streams };
+  });
+}
+
 // ---- manifest / builder ----------------------------------------------------
 
 async function buildManifest() {
   const catalogs = [];
   for (const source of SOURCES) {
-    let genreOptions = [];
-    try {
-      const years = await scraper.listYears(source.baseUrl);
-      genreOptions = years.map((y) => y.name);
-    } catch {
-      // If startup scrape fails, ship without year filter; browse/search still work.
+    const layout = layoutOf(source);
+    const extra = [{ name: 'search', isRequired: false }];
+
+    if (layout === 'year' || layout === 'language') {
+      let options = [];
+      try {
+        options = (await scraper.listGroups(source.baseUrl, layout)).map((g) => g.name);
+      } catch {
+        // ship without the filter if the base listing fails at startup
+      }
+      extra.push({ name: 'genre', isRequired: false, options });
     }
+    extra.push({ name: 'skip', isRequired: false });
+
     catalogs.push({
-      type: 'movie',
+      type: stremioType(source),
       id: `ftpbd-${source.id}`,
       name: source.name,
-      extra: [
-        { name: 'search', isRequired: false },
-        { name: 'genre', isRequired: false, options: genreOptions },
-        { name: 'skip', isRequired: false }
-      ]
+      extra
     });
   }
 
   return {
     id: 'community.ftpbd.movies',
-    version: '1.0.0',
+    version: '2.0.0',
     name: 'FTPBD Movies',
     description:
-      'Browse and stream movies indexed on the FTPBD server, with posters and metadata from Cinemeta.',
+      'Browse and stream movies & TV series indexed on the FTPBD server, with posters, metadata and subtitles matched via Cinemeta/IMDB.',
     logo: 'https://www.ftpbd.net/favicon.ico',
     resources: [
       'catalog',
-      // Provide streams for real IMDB movies (so subtitles/metadata addons work)
-      // AND for our fallback folder ids.
-      { name: 'stream', types: ['movie'], idPrefixes: ['tt', 'ftpbd:'] },
-      // Only serve meta for our fallback ids; Cinemeta owns IMDB metadata.
-      { name: 'meta', types: ['movie'], idPrefixes: ['ftpbd:'] }
+      // Streams for real IMDB movies/series AND our fallback ids.
+      { name: 'stream', types: ['movie', 'series'], idPrefixes: ['tt', 'ftpbd:'] },
+      // Meta only for our fallback ids; Cinemeta owns IMDB metadata.
+      { name: 'meta', types: ['movie', 'series'], idPrefixes: ['ftpbd:'] }
     ],
-    types: ['movie'],
+    types: ['movie', 'series'],
     idPrefixes: ['tt', 'ftpbd:'],
     catalogs,
     behaviorHints: { configurable: false }
@@ -280,4 +416,7 @@ async function createAddon() {
   return builder.getInterface();
 }
 
-module.exports = { createAddon, _internals: { catalogHandler, metaHandler, streamHandler } };
+module.exports = {
+  createAddon,
+  _internals: { catalogHandler, metaHandler, streamHandler, buildSeriesMeta, collectEpisodes }
+};

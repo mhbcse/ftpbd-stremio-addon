@@ -1,9 +1,15 @@
 // Configuration for the FTPBD Stremio addon.
 //
-// To add more categories later, append entries to SOURCES. Each source
-// becomes its own browsable catalog in Stremio. `baseUrl` must point at a
-// directory whose immediate children are YEAR folders (h5ai style), and each
-// year folder contains one sub-folder per movie holding the video file.
+// Each SOURCES entry becomes its own browsable catalog in Stremio. A source's
+// `layout` tells the scraper how its folders are organized:
+//
+//   'year'     base / <year> / <movie> / video       (default, e.g. English Movies)
+//   'language' base / <language> / <movie> / video    (e.g. Foreign Language Movies)
+//   'flat'     base / <movie> / video                 (e.g. Awards & TV Shows)
+//   'series'   base / <show> / <Season-N> / <S..E..>   (TV series)
+//
+// Movie layouts ('year'/'language'/'flat') produce a `movie` catalog; 'series'
+// produces a `series` catalog with per-episode streams.
 
 module.exports = {
   PORT: process.env.PORT || 7000,
@@ -18,37 +24,79 @@ module.exports = {
   ENRICH_CONCURRENCY: 8,
 
   SOURCES: [
+    // ---- Movies ----
     {
       id: 'english',
       name: 'FTPBD English Movies',
-      baseUrl: 'https://server2.ftpbd.net/FTP-2/English%20Movies/'
+      baseUrl: 'https://server2.ftpbd.net/FTP-2/English%20Movies/',
+      layout: 'year'
     },
     {
       id: 'english4k',
       name: 'FTPBD English 4K',
-      baseUrl: 'https://server2.ftpbd.net/FTP-2/English%20Movies/English-Movies-4K/'
+      baseUrl: 'https://server2.ftpbd.net/FTP-2/English%20Movies/English-Movies-4K/',
+      layout: 'year'
     },
     {
       id: 'hindi',
       name: 'FTPBD Hindi Movies',
-      baseUrl: 'https://server3.ftpbd.net/FTP-3/Hindi%20Movies/'
+      baseUrl: 'https://server3.ftpbd.net/FTP-3/Hindi%20Movies/',
+      layout: 'year'
     },
     {
       id: 'south',
       name: 'FTPBD South Indian Movies',
-      baseUrl: 'https://server3.ftpbd.net/FTP-3/South%20Indian%20Movies/'
+      baseUrl: 'https://server3.ftpbd.net/FTP-3/South%20Indian%20Movies/',
+      layout: 'year'
     },
     {
       id: 'animation',
       name: 'FTPBD Animation Movies',
-      baseUrl: 'https://server5.ftpbd.net/FTP-5/Animation%20Movies/'
+      baseUrl: 'https://server5.ftpbd.net/FTP-5/Animation%20Movies/',
+      layout: 'year'
+    },
+    {
+      id: 'bangla',
+      name: 'FTPBD Bangla Movies',
+      baseUrl: 'https://server3.ftpbd.net/FTP-3/Bangla%20Collection/BANGLA/Kolkata-Bangla-Movies/',
+      layout: 'year'
+    },
+    {
+      id: 'foreign',
+      name: 'FTPBD Foreign Movies',
+      baseUrl: 'https://server3.ftpbd.net/FTP-3/Foreign%20Language%20Movies/',
+      layout: 'language'
+    },
+    {
+      id: 'awards',
+      name: 'FTPBD Awards & TV Shows',
+      baseUrl: 'https://server7.ftpbd.net/FTP-7/Awards--TV-Shows/',
+      layout: 'flat'
+    },
+
+    // ---- TV Series ----
+    {
+      id: 'tv-en',
+      name: 'FTPBD English & Foreign TV Series',
+      baseUrl: 'https://server4.ftpbd.net/FTP-4/English-Foreign-TV-Series/',
+      layout: 'series'
+    },
+    {
+      id: 'tv-hindi',
+      name: 'FTPBD Hindi TV Series',
+      baseUrl: 'https://server3.ftpbd.net/FTP-3/Hindi%20TV%20Series/',
+      layout: 'series'
+    },
+    {
+      id: 'tv-bengali',
+      name: 'FTPBD Bengali Web Series',
+      baseUrl: 'https://server3.ftpbd.net/FTP-3/Bangla%20Collection/BANGLA/Web-Series/',
+      layout: 'series'
     }
-    // More year-organized sections you can enable (verified compatible):
-    // { id: 'dual', name: 'FTPBD Dual-Audio', baseUrl: 'https://server2.ftpbd.net/FTP-2/English%20Movies/Dual-Audio/' },
-    // { id: '3d',   name: 'FTPBD 3D Movies',  baseUrl: 'https://server2.ftpbd.net/FTP-2/3D%20Movies/' },
-    //
-    // NOTE: "Foreign Language Movies" is organized by LANGUAGE then year (an extra
-    // nesting level), so the scraper needs changes before it can be added.
+
+    // More year-organized movie sections you can enable (verified compatible):
+    // { id: 'dual', name: 'FTPBD Dual-Audio', baseUrl: 'https://server2.ftpbd.net/FTP-2/English%20Movies/Dual-Audio/', layout: 'year' },
+    // { id: '3d',   name: 'FTPBD 3D Movies',  baseUrl: 'https://server2.ftpbd.net/FTP-2/3D%20Movies/', layout: 'year' },
   ],
 
   VIDEO_EXTENSIONS: ['.mp4', '.mkv', '.avi', '.m4v', '.webm', '.mov', '.ts'],

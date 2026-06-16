@@ -1,8 +1,9 @@
 # FTPBD Stremio Addon
 
-A [Stremio](https://www.stremio.com/) addon that browses and streams movies
-indexed on the **FTPBD** server (`ftpbd.net`, h5ai directory listings) directly
-inside Stremio — with posters, descriptions and ratings pulled from Cinemeta.
+A [Stremio](https://www.stremio.com/) addon that browses and streams **movies
+and TV series** indexed on the **FTPBD** server (`ftpbd.net`, h5ai directory
+listings) directly inside Stremio — with posters, descriptions, ratings and
+subtitles matched via Cinemeta/IMDB.
 
 The video files are served over HTTPS with byte-range support, so seeking and
 scrubbing work normally; nothing is proxied or re-encoded by the addon.
@@ -20,12 +21,15 @@ The FTPBD servers are **only reachable from the ISP/home network they belong to*
 
 ## Features
 
-- **Browsable catalog** of movies, filterable by **year** and **searchable**.
-- **Poster / metadata matching** via Cinemeta (Stremio's public metadata API).
+- **Browsable catalogs** for movies and TV series, **searchable** (and filterable
+  by year/language where applicable).
+- **TV series support** — episodes parsed per season; matched shows expose proper
+  `imdb:season:episode` streams so Cinemeta episode lists + OpenSubtitles work.
+- **Poster / metadata / subtitle matching** via Cinemeta (Stremio's public API):
+  matched titles use their real IMDB id so the whole Stremio ecosystem lights up.
+- **Multiple source layouts** — `year`, `language`, `flat` (movies) and `series`.
 - **Direct HTTPS streams** with quality tags (1080p / 720p / 4K, BluRay/WEBRip…).
 - In-memory **caching** so browsing stays fast.
-- **Stateless ids** — each movie's id encodes its folder URL, so meta and stream
-  resolution never depends on server state.
 
 ## Requirements
 
@@ -68,16 +72,22 @@ Everything lives in [`config.js`](./config.js):
 
 ### Add more categories
 
-Each source's `baseUrl` must point at a folder whose **immediate children are
-year folders**, and each year folder contains **one sub-folder per movie**.
-Uncomment / add entries in `config.js`, e.g.:
+Add entries in `config.js`. Each source sets a `layout` describing its folder
+structure (see comments in `config.js`):
+
+| `layout`     | structure                                  | catalog type |
+|--------------|--------------------------------------------|--------------|
+| `year`       | `base / <year> / <movie> / video`          | movie        |
+| `language`   | `base / <language> / <movie> / video`      | movie        |
+| `flat`       | `base / <movie> / video`                   | movie        |
+| `series`     | `base / <show> / <Season-N> / <S..E..>`    | series       |
 
 ```js
-{ id: 'hindi', name: 'FTPBD Hindi Movies',
+{ id: 'hindi', name: 'FTPBD Hindi Movies', layout: 'year',
   baseUrl: 'https://server3.ftpbd.net/FTP-3/Hindi%20Movies/' }
 ```
 
-Restart the addon and a new catalog shows up.
+Then `systemctl --user restart ftpbd-addon` and the new catalog shows up.
 
 ## How it works
 
@@ -138,5 +148,7 @@ install `http://<this-machine-LAN-IP>:7000/manifest.json` on those devices.
   outside our control. If a listing layout changes, `lib/scraper.js` is where to
   adjust parsing.
 - Metadata matching is best-effort by title+year; obscure releases may not match
-  a Cinemeta poster (they still play — the card just shows the parsed title).
-- Movies only for now (TV series use a different season/episode layout).
+  a Cinemeta poster (they still play — the card just shows the parsed title, and
+  unmatched titles use a fallback id so they get no auto-subtitles).
+- TV series episode resolution relies on `SxxExx`-style filenames and Cinemeta's
+  episode numbering lining up with the files; oddly-numbered releases may not map.
