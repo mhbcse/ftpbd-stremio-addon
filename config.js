@@ -22,11 +22,33 @@ module.exports = {
       id: 'english',
       name: 'FTPBD English Movies',
       baseUrl: 'https://server2.ftpbd.net/FTP-2/English%20Movies/'
+    },
+    {
+      id: 'english4k',
+      name: 'FTPBD English 4K',
+      baseUrl: 'https://server2.ftpbd.net/FTP-2/English%20Movies/English-Movies-4K/'
+    },
+    {
+      id: 'hindi',
+      name: 'FTPBD Hindi Movies',
+      baseUrl: 'https://server3.ftpbd.net/FTP-3/Hindi%20Movies/'
+    },
+    {
+      id: 'south',
+      name: 'FTPBD South Indian Movies',
+      baseUrl: 'https://server3.ftpbd.net/FTP-3/South%20Indian%20Movies/'
+    },
+    {
+      id: 'animation',
+      name: 'FTPBD Animation Movies',
+      baseUrl: 'https://server5.ftpbd.net/FTP-5/Animation%20Movies/'
     }
-    // Examples you can enable later:
-    // { id: 'english4k', name: 'FTPBD English 4K',  baseUrl: 'https://server2.ftpbd.net/FTP-2/English%20Movies/English-Movies-4K/' },
-    // { id: 'hindi',     name: 'FTPBD Hindi Movies', baseUrl: 'https://server3.ftpbd.net/FTP-3/Hindi%20Movies/' },
-    // { id: 'foreign',   name: 'FTPBD Foreign Movies', baseUrl: 'https://server3.ftpbd.net/FTP-3/Foreign%20Language%20Movies/' }
+    // More year-organized sections you can enable (verified compatible):
+    // { id: 'dual', name: 'FTPBD Dual-Audio', baseUrl: 'https://server2.ftpbd.net/FTP-2/English%20Movies/Dual-Audio/' },
+    // { id: '3d',   name: 'FTPBD 3D Movies',  baseUrl: 'https://server2.ftpbd.net/FTP-2/3D%20Movies/' },
+    //
+    // NOTE: "Foreign Language Movies" is organized by LANGUAGE then year (an extra
+    // nesting level), so the scraper needs changes before it can be added.
   ],
 
   VIDEO_EXTENSIONS: ['.mp4', '.mkv', '.avi', '.m4v', '.webm', '.mov', '.ts'],
