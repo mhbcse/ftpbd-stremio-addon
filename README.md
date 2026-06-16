@@ -7,6 +7,17 @@ inside Stremio — with posters, descriptions and ratings pulled from Cinemeta.
 The video files are served over HTTPS with byte-range support, so seeking and
 scrubbing work normally; nothing is proxied or re-encoded by the addon.
 
+## ⚠️ Network requirement (important)
+
+The FTPBD servers are **only reachable from the ISP/home network they belong to**
+— not from cloud datacenters. This means:
+
+- The addon must run on a machine **on that home network** (your PC, or an
+  always-on home device like a Pi/NAS). Cloud hosting (Render, Fly, Cloudflare,
+  a VPS, …) **cannot reach FTPBD and will not work**.
+- The stream URLs also only resolve on that network, so the device running
+  **Stremio must be on the home network too**.
+
 ## Features
 
 - **Browsable catalog** of movies, filterable by **year** and **searchable**.
@@ -43,8 +54,8 @@ Manifest:  http://127.0.0.1:7000/manifest.json
 A new **FTPBD English Movies** catalog appears under Discover/Board. Open any
 movie and pick the **FTPBD** stream to play.
 
-> The addon must be running (`npm start`) whenever you want to browse/stream.
-> For an always-on install, deploy it (see below) and use the public URL.
+> `npm start` only runs while the terminal is open. For an always-on setup that
+> survives reboots, install it as a service — see [Always-on](#always-on-systemd) below.
 
 ## Configuration
 
@@ -72,7 +83,7 @@ Restart the addon and a new catalog shows up.
 
 ```
 config.js          source definitions (base URLs)
-server.js          boots the HTTP server (stremio-addon-sdk)
+server.js          HTTP server (getRouter + express), binds HOST:PORT
 addon.js           manifest + catalog / meta / stream handlers
 lib/scraper.js     parses h5ai listings: years -> movies -> video files
 lib/cinemeta.js    poster/metadata lookup (Cinemeta)
@@ -87,11 +98,39 @@ lib/id.js          encode/decode folder URL <-> Stremio id
 - **Stream** — opens the movie folder, finds the video file, returns its direct
   HTTPS URL.
 
-## Deploy (optional, always-on)
+## Always-on (systemd)
 
-Any Node host works (Render, Railway, Fly.io, a VPS). Set `PORT` from the
-platform's env var, deploy, and install the public
-`https://<your-host>/manifest.json` in Stremio. No database needed.
+Run it as a background service so it starts on boot and restarts on crash — no
+terminal needed. Because FTPBD is home-network only (see above), this runs on a
+machine **on your home network**, not in the cloud.
+
+A ready-to-use unit is in [`deploy/ftpbd-addon.service`](./deploy/ftpbd-addon.service).
+Install it as a **user service** (no root needed):
+
+```bash
+# 1. copy the unit, editing the node path / project path inside it if needed
+mkdir -p ~/.config/systemd/user
+cp deploy/ftpbd-addon.service ~/.config/systemd/user/
+
+# 2. enable + start it
+systemctl --user daemon-reload
+systemctl --user enable --now ftpbd-addon
+
+# 3. keep it running across reboots without logging in
+loginctl enable-linger "$USER"
+```
+
+Manage it:
+
+```bash
+systemctl --user status ftpbd-addon     # is it running?
+systemctl --user restart ftpbd-addon    # after editing config.js
+journalctl --user -u ftpbd-addon -f     # live logs
+```
+
+It listens on `127.0.0.1:7000` by default (localhost only). To let other devices
+on your home network (phone/TV) reach it, set `HOST=0.0.0.0` in the unit and
+install `http://<this-machine-LAN-IP>:7000/manifest.json` on those devices.
 
 ## Notes / limitations
 

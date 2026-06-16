@@ -1,0 +1,19 @@
+[Unit]
+Description=FTPBD Stremio Addon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Edit these two paths to match your machine:
+#   - WorkingDirectory: where you cloned this repo
+#   - ExecStart node path: output of `command -v node` (nvm users have a versioned path)
+WorkingDirectory=%h/projects/personal/ftpbd-stremio-addon
+Environment=HOST=127.0.0.1
+Environment=PORT=7000
+ExecStart=/usr/bin/env node %h/projects/personal/ftpbd-stremio-addon/server.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
